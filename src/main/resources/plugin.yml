@@ -1,0 +1,62 @@
+name: DDSMP
+version: '1.0-SNAPSHOT'
+main: de.dd.ddsmp.ddsmp
+api-version: '1.21'
+load: STARTUP
+authors: [ DerDavid66 ]
+description: Alle Systeme für den DD SMP!
+website: https://ddsmp.netlify.app
+
+commands:
+    home:
+        description: Teleportiert dich zum ausgewählten Home
+        usage: /home <name>
+        permission-message: §bDD SMP §8» §cDazu hast du keine Rechte!
+
+    sethome:
+        description: Setzt dein Home
+        usage: /sethome <name>
+        permission-message: §bDD SMP §8» §cDazu hast du keine Rechte!
+
+    delhome:
+        description: Löscht das ausgewählte Home
+        usage: /delhome <name>
+        permission-message: §bDD SMP §8» §cDazu hast du keine Rechte!
+
+    tpa:
+        description: Sendet dem ausgewählten Spieler eine TPA Anfrage
+        usage: /tpa <player>
+        permission-message: §bDD SMP §8» §cDazu hast du keine Rechte!
+
+    tpaccept:
+        description: Akzeptiert eine TPA oder TPA-Here Anfrage
+        usage: /tpaccept <player>
+        permission-message: §bDD SMP §8» §cDazu hast du keine Rechte!
+
+    tpadeny:
+        description: Lehnt eine TPA oder TPA-Here Anfrage ab
+        usage: /tpadeny <player>
+        permission-message: §bDD SMP §8» §cDazu hast du keine Rechte!
+
+    chunk:
+        description: Chunk verwaltung
+        usage: /chunk <claim|unclaim|trust|untrust|info|list>
+        permission-message: §bDD SMP §8» §cDazu hast du keine Rechte!
+
+    mute:
+        description: Sperrt den ausgewählten Spieler im Chat
+        usage: /mute <player> <reason>
+        permission: ddsmp.admin
+        permission-message: §bDD SMP §8» §cDazu hast du keine Rechte!
+
+    unmute:
+        description: Entsperrt den ausgewählten Spieler im Chat
+        usage: /unmute <player>
+        permission: ddsmp.admin
+        permission-message: §bDD SMP §8» §cDazu hast du keine Rechte!
+
+    checkmute:
+        description: Zeigt die Chat-Sperre des ausgewählten Spielers und den Grund an
+        usage: /checkmute <player>
+        permission: ddsmp.admin
+        permission-message: §bDD SMP §8» §cDazu hast du keine Rechte!
