@@ -136,8 +136,9 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
     public void onPlayerCommandPreprocess(PlayerCommandPreprocessEvent event) {
         Player p = event.getPlayer();
         if (!event.isCancelled()) {
-            String command = event.getMessage().split(" ")[0];
-            HelpTopic htopic = Bukkit.getServer().getHelpMap().getHelpTopic(command);
+            String command = event.getMessage().split(" ")[0].substring(1);
+            if (command.contains(":")) command = command.split(":")[1];
+            HelpTopic htopic = Bukkit.getServer().getHelpMap().getHelpTopic("/" + command);
             if (htopic == null) {
                 p.sendMessage(UNKNOWN_COMMAND_MESSAGE);
                 event.setCancelled(true);
