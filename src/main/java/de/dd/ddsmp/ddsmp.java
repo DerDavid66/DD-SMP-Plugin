@@ -369,7 +369,6 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
         for (String chunkKey : playerClaims) {
             p.sendMessage("§r ");
             p.sendMessage("§aID: §b" + chunkKey.replace(",", ", "));
-            p.sendMessage("§aBesitzer: §b" + p.getName());
             p.sendMessage("§aVertraute Spieler: §b" + trustedStr);
         }
     }
