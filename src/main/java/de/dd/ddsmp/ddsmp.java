@@ -3,6 +3,7 @@ package de.dd.ddsmp;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.*;
+import org.bukkit.block.Block;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
@@ -10,18 +11,23 @@ import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.event.*;
+import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.player.*;
 import org.bukkit.help.HelpTopic;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.Damageable;
+import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitRunnable;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.*;
+import java.util.stream.Collectors;
 
 public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
 
@@ -439,8 +445,129 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
         UUID owner = getChunkOwner(e.getBlock().getChunk());
         if (owner != null && !owner.equals(p.getUniqueId()) && !claimsConfig.getStringList(owner.toString() + ".trusted").contains(p.getUniqueId().toString())) {
             e.setCancelled(true);
+            return;
+        }
+
+        if (p.isSneaking() && isAxe(p.getInventory().getItemInMainHand().getType()) && isLog(e.getBlock().getType())) {
+            e.setCancelled(true);
+            chopTree(e.getBlock(), p);
         }
     }
+
+    private boolean isAxe(Material material) {
+        return material.toString().endsWith("_AXE");
+    }
+
+    private boolean isLog(Material material) {
+        return material.toString().endsWith("_LOG") || material.toString().endsWith("_WOOD");
+    }
+
+    private boolean isLeaves(Material material) {
+        return material.toString().endsWith("_LEAVES");
+    }
+
+    private void chopTree(Block startBlock, Player p) {
+        Set<Block> logBlocks = findTreeBlocks(startBlock);
+        if (logBlocks.isEmpty()) {
+            startBlock.breakNaturally(p.getInventory().getItemInMainHand());
+            return;
+        }
+
+        Set<Block> leafBlocks = new HashSet<>();
+        for (Block log : logBlocks) {
+            for (int x = -2; x <= 2; x++) {
+                for (int y = -2; y <= 2; y++) {
+                    for (int z = -2; z <= 2; z++) {
+                        Block neighbor = log.getRelative(x, y, z);
+                        if (isLeaves(neighbor.getType()) && !leafBlocks.contains(neighbor)) {
+                            leafBlocks.add(neighbor);
+                        }
+                    }
+                }
+            }
+        }
+
+        ItemStack axe = p.getInventory().getItemInMainHand();
+        ItemMeta meta = axe.getItemMeta();
+        int durabilityLoss = 0;
+
+        for (Block log : logBlocks) {
+            if (!log.getLocation().equals(startBlock.getLocation())) {
+                UUID owner = getChunkOwner(log.getChunk());
+                if (owner != null && !owner.equals(p.getUniqueId()) && !claimsConfig.getStringList(owner.toString() + ".trusted").contains(p.getUniqueId().toString())) {
+                    p.sendMessage(prefix + "§cDas Abholzen des gesamten Baumes wurde gestoppt, da sich ein Teil im geclaimten Gebiet eines anderen Spielers befindet.");
+                    return;
+                }
+            }
+
+            log.breakNaturally(axe);
+            durabilityLoss += calculateDurabilityLoss(axe.getType());
+        }
+
+        for (Block leaf : leafBlocks) {
+            leaf.breakNaturally();
+        }
+
+        if (meta instanceof Damageable && durabilityLoss > 0) {
+            Damageable damageable = (Damageable) meta;
+            int newDamage = damageable.getDamage() + durabilityLoss;
+
+            if (newDamage >= axe.getType().getMaxDurability()) {
+                p.getInventory().setItemInMainHand(null);
+                p.playSound(p.getLocation(), Sound.ENTITY_ITEM_BREAK, 1.0f, 1.0f);
+            } else {
+                damageable.setDamage(newDamage);
+                axe.setItemMeta(meta);
+            }
+        }
+
+        p.playSound(p.getLocation(), Sound.BLOCK_BEEHIVE_EXIT, 1.0f, 1.0f);
+    }
+
+    private int calculateDurabilityLoss(Material toolMaterial) {
+        return 1;
+    }
+
+    private Set<Block> findTreeBlocks(Block startBlock) {
+        Set<Block> logBlocks = new HashSet<>();
+        Queue<Block> queue = new LinkedList<>();
+
+        if (!isLog(startBlock.getType())) {
+            return new HashSet<>();
+        }
+
+        queue.add(startBlock);
+        logBlocks.add(startBlock);
+
+        int logCount = 1;
+        int maxLogCount = 500;
+
+        while (!queue.isEmpty()) {
+            Block current = queue.poll();
+
+            for (int x = -1; x <= 1; x++) {
+                for (int y = -1; y <= 1; y++) {
+                    for (int z = -1; z <= 1; z++) {
+                        if (x == 0 && y == 0 && z == 0) continue;
+
+                        Block neighbor = current.getRelative(x, y, z);
+
+                        if (isLog(neighbor.getType()) && !logBlocks.contains(neighbor)) {
+                            logCount++;
+                            if (logCount > maxLogCount) {
+                                return new HashSet<>();
+                            }
+
+                            logBlocks.add(neighbor);
+                            queue.add(neighbor);
+                        }
+                    }
+                }
+            }
+        }
+        return logBlocks;
+    }
+
 
     @EventHandler
     public void onBlockPlace(BlockPlaceEvent e) {
