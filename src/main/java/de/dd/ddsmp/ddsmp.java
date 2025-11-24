@@ -14,6 +14,7 @@ import org.bukkit.event.*;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.player.*;
@@ -37,6 +38,8 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
     private final Map<UUID, Location> lastLocations = new HashMap<>();
     private final Map<UUID, Location> deathPoints = new HashMap<>();
     private final Map<UUID, String> currentChunkOwner = new HashMap<>();
+    private final Map<UUID, Long> tpaCooldowns = new HashMap<>();
+    private final Map<UUID, BukkitRunnable> tpaExpirationTasks = new HashMap<>();
     private File homesFile;
     private FileConfiguration homesConfig;
     private File claimsFile;
@@ -45,6 +48,10 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
     private FileConfiguration muteConfig;
     private final String prefix = "§bDD SMP §8» ";
     private final String UNKNOWN_COMMAND_MESSAGE = "§bDD SMP §8» §cDieser Befehl existiert nicht!";
+
+    private final long TPA_COOLDOWN_MILLIS = 15000;
+    private final int TELEPORT_COUNTDOWN_SECONDS = 3;
+    private final int TPA_EXPIRATION_TICKS = 20 * 60;
 
     private static class TpaRequest {
         UUID sender;
@@ -178,8 +185,50 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
             case "delhome": if (args.length != 1) { p.sendMessage(prefix + "§dVerwendung: §e/delhome <name>"); return true; } deleteHome(p, args[0]); return true;
             case "homes": listHomes(p); return true;
             case "tpa": if (args.length != 1) { p.sendMessage(prefix + "§dVerwendung: §e/tpa <Spieler>"); return true; } sendTpaRequest(p, args[0]); return true;
-            case "tpaccept": if (args.length != 1) { p.sendMessage(prefix + "§dVerwendung: §e/tpaccept <Spieler>"); return true; } acceptTpa(p, args[0]); return true;
-            case "tpadeny": if (args.length != 1) { p.sendMessage(prefix + "§dVerwendung: §e/tpadeny <Spieler>"); return true; } denyTpa(p, args[0]); return true;
+            case "tpaccept":
+                if (args.length == 0) {
+                    if (!tpaRequests.containsKey(p.getUniqueId())) {
+                        p.sendMessage(prefix + "§cKeine offene TPA-Anfrage!");
+                        return true;
+                    }
+                    TpaRequest request = tpaRequests.get(p.getUniqueId());
+                    Player senderPlayer = Bukkit.getPlayer(request.sender);
+                    if (senderPlayer == null) {
+                        p.sendMessage(prefix + "§cDie Anfrage ist ungültig (Sender ist offline).");
+                        cleanUpTpaRequest(p.getUniqueId());
+                        return true;
+                    }
+                    acceptTpa(p, senderPlayer.getName());
+                    return true;
+                } else if (args.length == 1) {
+                    acceptTpa(p, args[0]);
+                    return true;
+                } else {
+                    p.sendMessage(prefix + "§dVerwendung: §e/tpaccept <Spieler>");
+                    return true;
+                }
+            case "tpadeny":
+                if (args.length == 0) {
+                    if (!tpaRequests.containsKey(p.getUniqueId())) {
+                        p.sendMessage(prefix + "§cKeine offene TPA-Anfrage!");
+                        return true;
+                    }
+                    TpaRequest request = tpaRequests.get(p.getUniqueId());
+                    Player senderPlayer = Bukkit.getPlayer(request.sender);
+                    if (senderPlayer == null) {
+                        p.sendMessage(prefix + "§cDie Anfrage ist ungültig (Sender ist offline).");
+                        cleanUpTpaRequest(p.getUniqueId());
+                        return true;
+                    }
+                    denyTpa(p, senderPlayer.getName());
+                    return true;
+                } else if (args.length == 1) {
+                    denyTpa(p, args[0]);
+                    return true;
+                } else {
+                    p.sendMessage(prefix + "§dVerwendung: §e/tpadeny <Spieler>");
+                    return true;
+                }
             case "mute":
                 if (!p.hasPermission("ddsmp.admin")) { p.sendMessage(prefix + "§cKeine Berechtigung!"); return true; }
                 if (args.length < 2) { p.sendMessage(prefix + "§dVerwendung: §e/mute <Spieler> <Grund>"); return true; }
@@ -598,6 +647,17 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
         Player p = e.getPlayer();
         Chunk from = e.getFrom().getChunk();
         Chunk to = e.getTo().getChunk();
+
+        if (teleporting.contains(p.getUniqueId())) {
+            Location fromLoc = lastLocations.get(p.getUniqueId());
+            Location toLoc = e.getTo().getBlock().getLocation();
+
+            if (fromLoc != null && !fromLoc.equals(toLoc)) {
+                abortTeleportation(p, "bewegt");
+                if (from.equals(to)) return;
+            }
+        }
+
         if (from.equals(to)) return;
 
         UUID ownerFrom = getChunkOwner(from);
@@ -614,6 +674,16 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
         }
 
         currentChunkOwner.put(p.getUniqueId(), ownerTo != null ? Bukkit.getOfflinePlayer(ownerTo).getName() : "");
+    }
+
+    @EventHandler
+    public void onPlayerDamageAbortTeleport(EntityDamageEvent e) {
+        if (e.getEntity() instanceof Player) {
+            Player p = (Player) e.getEntity();
+            if (teleporting.contains(p.getUniqueId())) {
+                abortTeleportation(p, "Schaden genommen");
+            }
+        }
     }
 
     @EventHandler(priority = EventPriority.LOWEST)
@@ -644,8 +714,20 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
             p.sendMessage(prefix + "§cEs wurde kein §bHome §cmit diesem Namen gefunden!");
             return;
         }
+
+        if (tpaCooldowns.containsKey(p.getUniqueId())) {
+            long lastUsed = tpaCooldowns.get(p.getUniqueId());
+            long remaining = TPA_COOLDOWN_MILLIS - (System.currentTimeMillis() - lastUsed);
+            if (remaining > 0) {
+                p.sendMessage(prefix + "§cBitte warte noch §b" + (remaining / 1000 + 1) + " Sekunden, §cbevor du dich erneut teleportierst.");
+                return;
+            }
+        }
+
         Location loc = playerHomes.get(name.toLowerCase());
-        startTeleportCountdown(p, loc, true);
+        tpaCooldowns.put(p.getUniqueId(), System.currentTimeMillis());
+        p.sendMessage(prefix + "§aDu wirst in §b3 Sekunden §azu deinem Home §b" + name + " §ateleportiert!");
+        startTeleportation(p, loc, name);
     }
 
     private void deleteHome(Player p, String name) {
@@ -666,13 +748,54 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
         p.sendMessage(prefix + "§aDeine Homes: §b" + String.join(", ", playerHomes.keySet()));
     }
 
+    private void cleanUpTpaRequest(UUID receiverUUID) {
+        tpaRequests.remove(receiverUUID);
+        if (tpaExpirationTasks.containsKey(receiverUUID)) {
+            tpaExpirationTasks.remove(receiverUUID).cancel();
+        }
+    }
+
     private void sendTpaRequest(Player sender, String targetName) {
         Player target = Bukkit.getPlayerExact(targetName);
         if (target == null || !target.isOnline()) { sender.sendMessage(prefix + "§cDieser Spieler wurde nicht gefunden!"); return; }
         if (sender.getUniqueId().equals(target.getUniqueId())) { sender.sendMessage(prefix + "§cDu kannst keine Teleportationsanfragen an dich selbst senden!"); return; }
+
+        if (tpaCooldowns.containsKey(sender.getUniqueId())) {
+            long lastSent = tpaCooldowns.get(sender.getUniqueId());
+            long remaining = TPA_COOLDOWN_MILLIS - (System.currentTimeMillis() - lastSent);
+            if (remaining > 0) {
+                sender.sendMessage(prefix + "§cBitte warte noch §b" + (remaining / 1000 + 1) + " Sekunden, §cbevor du eine neue TPA-Anfrage sendest.");
+                return;
+            }
+        }
+
+        if (tpaRequests.containsKey(target.getUniqueId())) {
+            cleanUpTpaRequest(target.getUniqueId());
+        }
+
         tpaRequests.put(target.getUniqueId(), new TpaRequest(sender.getUniqueId()));
+        tpaCooldowns.put(sender.getUniqueId(), System.currentTimeMillis());
+
+        BukkitRunnable expirationTask = new BukkitRunnable() {
+            @Override
+            public void run() {
+                if (tpaRequests.containsKey(target.getUniqueId()) && tpaRequests.get(target.getUniqueId()).sender.equals(sender.getUniqueId())) {
+                    cleanUpTpaRequest(target.getUniqueId());
+                    if (target.isOnline()) {
+                        target.sendMessage(prefix + "§cDie TPA-Anfrage von §b" + sender.getName() + " §cist abgelaufen.");
+                    }
+                    if (sender.isOnline()) {
+                        sender.sendMessage(prefix + "§cDie TPA-Anfrage an §b" + target.getName() + " §cist abgelaufen.");
+                    }
+                }
+            }
+        };
+        expirationTask.runTaskLater(this, TPA_EXPIRATION_TICKS);
+        tpaExpirationTasks.put(target.getUniqueId(), expirationTask);
+
         sender.sendMessage(prefix + "§aTPA-Anfrage an §b" + target.getName() + " §agesendet!");
         target.sendMessage(prefix + "§b" + sender.getName() + " §ahat dir eine TPA-Anfrage gesendet!");
+        target.sendMessage(prefix + "§aNutze §e/tpaccept §aum die TPA-Anfrage zu akzeptieren!");
     }
 
     private void acceptTpa(Player accepter, String requesterName) {
@@ -686,10 +809,13 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
             accepter.sendMessage(prefix + "§cKeine offene TPA-Anfrage von diesem Spieler!");
             return;
         }
-        tpaRequests.remove(accepter.getUniqueId());
-        requester.sendMessage(prefix + "§aDeine TPA-Anfrage wurde akzeptiert!");
+
+        cleanUpTpaRequest(accepter.getUniqueId());
+
+        requester.sendMessage(prefix + "§b" + accepter.getName() + " §ahat deine TPA-Anfrage akzeptiert!");
         accepter.sendMessage(prefix + "§aDu hast die TPA-Anfrage von §b" + requester.getName() + " §aakzeptiert!");
-        startTpaCountdown(requester, accepter);
+
+        startTeleportation(requester, accepter.getLocation(), accepter.getName());
     }
 
     private void denyTpa(Player denier, String requesterName) {
@@ -703,44 +829,63 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
             denier.sendMessage(prefix + "§cKeine offene TPA-Anfrage von diesem Spieler!");
             return;
         }
-        tpaRequests.remove(denier.getUniqueId());
+
+        cleanUpTpaRequest(denier.getUniqueId());
+
         requester.sendMessage(prefix + "§cDeine TPA-Anfrage wurde von §b" + denier.getName() + " §cabgelehnt!");
         denier.sendMessage(prefix + "§aDu hast die TPA-Anfrage von §b" + requester.getName() + " §cabgelehnt!");
     }
 
-    private void startTeleportCountdown(Player p, Location target, boolean isHome) {
-        if (teleporting.contains(p.getUniqueId())) { p.sendMessage(prefix + "§cDu wirst bereits teleportiert!"); return; }
+    private void abortTeleportation(Player p, String reason) {
+        teleporting.remove(p.getUniqueId());
+        lastLocations.remove(p.getUniqueId());
+
+        p.sendActionBar(Component.text("§cTeleportation abgebrochen."));
+        new BukkitRunnable() { @Override public void run() { p.sendActionBar(Component.text("")); } }.runTaskLater(this, 40L);
+
+        p.playSound(p.getLocation(), Sound.ENTITY_VILLAGER_HURT, 1.0f, 1.0f);
+
+        p.sendMessage(prefix + "§cTeleportation abgebrochen, da du " + reason + " hast.");
+    }
+
+    private void startTeleportation(Player p, Location targetLoc, String targetName) {
+        if (teleporting.contains(p.getUniqueId())) {
+            p.sendMessage(prefix + "§cDu teleportierst bereits!");
+            return;
+        }
+
         teleporting.add(p.getUniqueId());
-        lastLocations.put(p.getUniqueId(), p.getLocation());
+        lastLocations.put(p.getUniqueId(), p.getLocation().getBlock().getLocation());
+
         new BukkitRunnable() {
-            int seconds = 3;
+            int seconds = TELEPORT_COUNTDOWN_SECONDS;
             @Override
             public void run() {
-                if (!p.isOnline()) { cancel(); teleporting.remove(p.getUniqueId()); return; }
-                Location start = lastLocations.get(p.getUniqueId());
-                if (hasMoved(start, p.getLocation())) { p.sendMessage(prefix + "§cDie Teleportation wurde abgebrochen, da du dich bewegt hast!"); teleporting.remove(p.getUniqueId()); cancel(); return; }
-                if (seconds > 0) { p.sendActionBar(Component.text("§7Teleportiere in §b" + seconds + " Sekunden...")); seconds--; }
-                else { p.teleport(target); if (isHome) p.sendMessage(prefix + "§aDu wurdest erfolgreich zu deinem §bHome §ateleportiert!"); else p.sendMessage(prefix + "§aDu wurdest erfolgreich teleportiert!"); teleporting.remove(p.getUniqueId()); cancel(); }
+                if (!p.isOnline() || !teleporting.contains(p.getUniqueId())) {
+                    cancel();
+                    teleporting.remove(p.getUniqueId());
+                    lastLocations.remove(p.getUniqueId());
+                    return;
+                }
+
+                if (seconds > 0) {
+                    p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_HAT, 1.0f, 1.0f);
+
+                    p.sendActionBar(Component.text("§7Teleportiere in §b" + seconds + " Sekunden"));
+                    seconds--;
+                } else {
+                    p.teleport(targetLoc);
+                    p.sendMessage(prefix + "§aDu wurdest teleportiert!");
+
+                    p.playSound(p.getLocation(), Sound.ENTITY_ENDERMAN_TELEPORT, 1.0f, 1.0f);
+
+                    teleporting.remove(p.getUniqueId());
+                    lastLocations.remove(p.getUniqueId());
+                    p.sendActionBar(Component.text("§aDu wurdest teleportiert!"));
+                    cancel();
+                }
             }
         }.runTaskTimer(this, 0L, 20L);
-    }
-
-    private void startTpaCountdown(Player requester, Player target) {
-        if (teleporting.contains(requester.getUniqueId())) { requester.sendMessage(prefix + "§cDu wirst bereits teleportiert!"); return; }
-        teleporting.add(requester.getUniqueId());
-        new BukkitRunnable() {
-            int seconds = 3;
-            @Override
-            public void run() {
-                if (!requester.isOnline()) { cancel(); teleporting.remove(requester.getUniqueId()); return; }
-                if (seconds > 0) { requester.sendActionBar(Component.text("§7Teleportiere in §b" + seconds + " Sekunden...")); seconds--; }
-                else { requester.teleport(target.getLocation()); requester.sendMessage(prefix + "§aDu wurdest zu §b" + target.getName() + " §ateleportiert!"); teleporting.remove(requester.getUniqueId()); cancel(); }
-            }
-        }.runTaskTimer(this, 0L, 20L);
-    }
-
-    private boolean hasMoved(Location a, Location b) {
-        return a.getBlockX() != b.getBlockX() || a.getBlockY() != b.getBlockY() || a.getBlockZ() != b.getBlockZ();
     }
 
     @EventHandler
@@ -764,6 +909,10 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
         e.quitMessage(LegacyComponentSerializer.legacyAmpersand().deserialize("§bDD SMP §8» §7[§c-§7] §c" + p.getName()));
         deathPoints.remove(p.getUniqueId());
         currentChunkOwner.remove(p.getUniqueId());
+
+        teleporting.remove(p.getUniqueId());
+        lastLocations.remove(p.getUniqueId());
+        cleanUpTpaRequest(p.getUniqueId());
     }
 
     @EventHandler
