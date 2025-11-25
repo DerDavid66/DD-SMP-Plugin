@@ -14,6 +14,7 @@ import org.bukkit.event.*;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
@@ -23,6 +24,8 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.Damageable;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.potion.PotionEffect;
+import org.bukkit.potion.PotionEffectType;
 import org.bukkit.scheduler.BukkitRunnable;
 
 import java.io.File;
@@ -40,6 +43,11 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
     private final Map<UUID, String> currentChunkOwner = new HashMap<>();
     private final Map<UUID, Long> tpaCooldowns = new HashMap<>();
     private final Map<UUID, BukkitRunnable> tpaExpirationTasks = new HashMap<>();
+    private final Map<UUID, Long> combatEndTime = new HashMap<>();
+    private final Map<UUID, BukkitRunnable> combatActionBarTasks = new HashMap<>();
+    private final Map<UUID, UUID> lastOpponent = new HashMap<>();
+    private final Set<UUID> combatLogDeaths = new HashSet<>();
+
     private File homesFile;
     private FileConfiguration homesConfig;
     private File claimsFile;
@@ -52,6 +60,7 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
     private final long TPA_COOLDOWN_MILLIS = 15000;
     private final int TELEPORT_COUNTDOWN_SECONDS = 3;
     private final int TPA_EXPIRATION_TICKS = 20 * 60;
+    private final int COMBAT_DURATION_SECONDS = 20;
 
     private static class TpaRequest {
         UUID sender;
@@ -73,6 +82,7 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
         saveHomes();
         saveClaims();
         saveMuteFile();
+        combatActionBarTasks.values().forEach(BukkitRunnable::cancel);
     }
 
     private void createHomesFile() {
@@ -166,6 +176,17 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
             return true;
         }
         Player p = (Player) sender;
+
+        if (cmd.getName().toLowerCase().equals("home") || cmd.getName().toLowerCase().equals("sethome")
+                || cmd.getName().toLowerCase().equals("delhome") || cmd.getName().toLowerCase().equals("homes")
+                || cmd.getName().toLowerCase().equals("tpa") || cmd.getName().toLowerCase().equals("tpaccept")
+                || cmd.getName().toLowerCase().equals("tpadeny")) {
+            if (isInCombat(p)) {
+                p.sendMessage(prefix + "§cDu kannst das nicht im Kampf tun!");
+                return true;
+            }
+        }
+
         if (cmd.getName().equalsIgnoreCase("chunk")) {
             if (args.length == 0) { p.sendMessage(prefix + "§dVerwendung: §e/chunk <claim | unclaim | trust | untrust | info | list>"); return true; }
             switch (args[0].toLowerCase()) {
@@ -432,6 +453,11 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
         OfflinePlayer target = Bukkit.getOfflinePlayer(args[0]);
         if (target == null) { admin.sendMessage(prefix + "§cSpieler nicht gefunden!"); return; }
 
+        if (muteConfig.getBoolean(target.getUniqueId().toString() + ".muted")) {
+            admin.sendMessage(prefix + "§b" + target.getName() + " §cist bereits gemutet!");
+            return;
+        }
+
         String reason = String.join(" ", Arrays.copyOfRange(args, 1, args.length));
         muteConfig.set(target.getUniqueId().toString() + ".muted", true);
         muteConfig.set(target.getUniqueId().toString() + ".reason", reason);
@@ -501,6 +527,72 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
             e.setCancelled(true);
             chopTree(e.getBlock(), p);
         }
+    }
+
+    @EventHandler
+    public void onEntityDamageByEntity(EntityDamageByEntityEvent e) {
+        if (e.isCancelled()) return;
+        if (!(e.getEntity() instanceof Player)) return;
+
+        Player victim = (Player) e.getEntity();
+        Player damager = null;
+
+        if (e.getDamager() instanceof Player) {
+            damager = (Player) e.getDamager();
+        } else if (e.getDamager() instanceof org.bukkit.entity.Projectile) {
+            org.bukkit.entity.Projectile projectile = (org.bukkit.entity.Projectile) e.getDamager();
+            if (projectile.getShooter() instanceof Player) {
+                damager = (Player) projectile.getShooter();
+            }
+        }
+
+        if (damager != null && !victim.getUniqueId().equals(damager.getUniqueId())) {
+            startCombatTag(victim);
+            startCombatTag(damager);
+
+            lastOpponent.put(victim.getUniqueId(), damager.getUniqueId());
+            lastOpponent.put(damager.getUniqueId(), victim.getUniqueId());
+        }
+    }
+
+    private boolean isInCombat(Player p) {
+        UUID uuid = p.getUniqueId();
+        return combatEndTime.containsKey(uuid) && combatEndTime.get(uuid) > System.currentTimeMillis();
+    }
+
+    private void startCombatTag(Player p) {
+        UUID uuid = p.getUniqueId();
+        long newEndTime = System.currentTimeMillis() + (COMBAT_DURATION_SECONDS * 1000L);
+        combatEndTime.put(uuid, newEndTime);
+
+        if (combatActionBarTasks.containsKey(uuid)) {
+            combatActionBarTasks.get(uuid).cancel();
+        }
+
+        BukkitRunnable task = new BukkitRunnable() {
+            @Override
+            public void run() {
+                if (!p.isOnline()) {
+                    cancel();
+                    combatActionBarTasks.remove(uuid);
+                    return;
+                }
+
+                long remainingMillis = combatEndTime.getOrDefault(uuid, 0L) - System.currentTimeMillis();
+                if (remainingMillis > 0) {
+                    long remainingSeconds = (remainingMillis / 1000L) + 1;
+                    p.sendActionBar(Component.text("§cIm Kampf: §b" + remainingSeconds + "s"));
+                } else {
+                    p.sendActionBar(Component.text("§aDer Kampf ist beendet!"));
+                    new BukkitRunnable() { @Override public void run() { p.sendActionBar(Component.text("")); } }.runTaskLater(ddsmp.this, 40L);
+                    combatEndTime.remove(uuid);
+                    combatActionBarTasks.remove(uuid);
+                    cancel();
+                }
+            }
+        };
+        task.runTaskTimer(this, 0L, 20L);
+        combatActionBarTasks.put(uuid, task);
     }
 
     private boolean isAxe(Material material) {
@@ -888,11 +980,59 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
         }.runTaskTimer(this, 0L, 20L);
     }
 
+    private void dropPlayerInventoryAndXP(Player p) {
+        World world = p.getWorld();
+        Location loc = p.getLocation();
+
+        for (ItemStack item : p.getInventory().getContents()) {
+            if (item != null && !item.getType().equals(Material.AIR)) {
+                world.dropItemNaturally(loc, item);
+            }
+        }
+
+        p.getInventory().clear();
+        p.getInventory().setArmorContents(null);
+        p.getInventory().setItemInOffHand(null);
+
+        if (p.getTotalExperience() > 0) {
+            org.bukkit.entity.ExperienceOrb orb = (org.bukkit.entity.ExperienceOrb) world.spawnEntity(loc, org.bukkit.entity.EntityType.EXPERIENCE_ORB);
+            orb.setExperience(p.getTotalExperience());
+        }
+        p.setTotalExperience(0);
+        p.setLevel(0);
+        p.setExp(0);
+    }
+
     @EventHandler
     public void onJoin(PlayerJoinEvent e) {
         Player p = e.getPlayer();
         p.setGameMode(GameMode.SURVIVAL);
         e.joinMessage(LegacyComponentSerializer.legacyAmpersand().deserialize("§bDD SMP §8» §7[§a+§7] §a" + p.getName()));
+
+        if (combatLogDeaths.contains(p.getUniqueId())) {
+
+            p.setHealth(p.getMaxHealth());
+            p.setFoodLevel(20);
+
+            p.getInventory().clear();
+            p.getInventory().setArmorContents(null);
+            p.getInventory().setItemInOffHand(null);
+
+            p.setTotalExperience(0);
+            p.setLevel(0);
+            p.setExp(0);
+
+            p.teleport(p.getWorld().getSpawnLocation());
+
+            p.playSound(p.getLocation(), Sound.BLOCK_BEACON_DEACTIVATE, 1.0f, 1.0f);
+
+            p.sendTitle("§4Du bist gestorben!", "§cDu hast dich im Kampf ausgeloggt!", 5, 40, 10);
+
+            p.addPotionEffect(new PotionEffect(PotionEffectType.BLINDNESS, 40, 0));
+
+            combatLogDeaths.remove(p.getUniqueId());
+        }
+
         Bukkit.getScheduler().runTaskLater(this, () -> {
             for (int i = 0; i < 1000; ++i) p.sendMessage("§r ");
             p.sendMessage("§r                                                                      ");
@@ -907,6 +1047,35 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
     public void onQuit(PlayerQuitEvent e) {
         Player p = e.getPlayer();
         e.quitMessage(LegacyComponentSerializer.legacyAmpersand().deserialize("§bDD SMP §8» §7[§c-§7] §c" + p.getName()));
+
+        if (isInCombat(p)) {
+            dropPlayerInventoryAndXP(p);
+
+            p.sendMessage("§cDu hast den Server während dem Kampf verlassen! Deine Gegenstände und XP wurden fallengelassen.");
+
+            combatLogDeaths.add(p.getUniqueId());
+
+            UUID opponentUUID = lastOpponent.get(p.getUniqueId());
+            Player opponent = opponentUUID != null ? Bukkit.getPlayer(opponentUUID) : null;
+
+            combatEndTime.remove(p.getUniqueId());
+            if (combatActionBarTasks.containsKey(p.getUniqueId())) {
+                combatActionBarTasks.remove(p.getUniqueId()).cancel();
+            }
+            p.sendActionBar(Component.text("§aDer Kampf ist beendet!"));
+
+            if (opponent != null && opponent.isOnline()) {
+                opponent.sendActionBar(Component.text("§aDer Kampf mit §b" + p.getName() + " §aist beendet!"));
+                new BukkitRunnable() { @Override public void run() { opponent.sendActionBar(Component.text("")); } }.runTaskLater(ddsmp.this, 40L);
+                combatEndTime.remove(opponent.getUniqueId());
+                if (combatActionBarTasks.containsKey(opponent.getUniqueId())) {
+                    combatActionBarTasks.remove(opponent.getUniqueId()).cancel();
+                }
+            }
+
+            lastOpponent.remove(p.getUniqueId());
+        }
+
         deathPoints.remove(p.getUniqueId());
         currentChunkOwner.remove(p.getUniqueId());
 
@@ -918,10 +1087,33 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
     @EventHandler
     public void onDeath(PlayerDeathEvent e) {
         Player p = e.getEntity();
+        UUID pUuid = p.getUniqueId();
+
+        if (isInCombat(p)) {
+            UUID opponentUUID = lastOpponent.get(pUuid);
+            Player killer = opponentUUID != null ? Bukkit.getPlayer(opponentUUID) : null;
+
+            combatEndTime.remove(pUuid);
+            if (combatActionBarTasks.containsKey(pUuid)) {
+                combatActionBarTasks.remove(pUuid).cancel();
+            }
+
+            if (killer != null && killer.isOnline() && isInCombat(killer)) {
+                combatEndTime.remove(opponentUUID);
+                if (combatActionBarTasks.containsKey(opponentUUID)) {
+                    combatActionBarTasks.remove(opponentUUID).cancel();
+                }
+                killer.sendActionBar(Component.text("§aDer Kampf mit §b" + p.getName() + " §aist beendet!"));
+                new BukkitRunnable() { @Override public void run() { killer.sendActionBar(Component.text("")); } }.runTaskLater(ddsmp.this, 40L);
+            }
+        }
+
+        lastOpponent.remove(pUuid);
+
         Location deathLoc = p.getLocation();
-        deathPoints.put(p.getUniqueId(), deathLoc);
+        deathPoints.put(pUuid, deathLoc);
         p.sendMessage(prefix + "§cDu bist gestorben bei §eX: " + deathLoc.getBlockX() + " Y: " + deathLoc.getBlockY() + " Z: " + deathLoc.getBlockZ());
-        Map<String, Location> playerHomes = homes.get(p.getUniqueId());
+        Map<String, Location> playerHomes = homes.get(pUuid);
         if (playerHomes != null && !playerHomes.isEmpty()) {
             String closestHome = null;
             double closestDist = Double.MAX_VALUE;
