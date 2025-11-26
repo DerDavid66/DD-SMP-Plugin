@@ -4,6 +4,7 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.*;
 import org.bukkit.block.Block;
+import org.bukkit.block.Skull;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
@@ -23,6 +24,7 @@ import org.bukkit.help.HelpTopic;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.Damageable;
 import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.inventory.meta.SkullMeta;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
@@ -38,6 +40,7 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
     private final Map<UUID, Map<String, Location>> homes = new HashMap<>();
     private final Map<UUID, TpaRequest> tpaRequests = new HashMap<>();
     private final Set<UUID> teleporting = new HashSet<>();
+    private final Map<UUID, BukkitRunnable> teleportTasks = new HashMap<>();
     private final Map<UUID, Location> lastLocations = new HashMap<>();
     private final Map<UUID, Location> deathPoints = new HashMap<>();
     private final Map<UUID, String> currentChunkOwner = new HashMap<>();
@@ -47,6 +50,7 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
     private final Map<UUID, BukkitRunnable> combatActionBarTasks = new HashMap<>();
     private final Map<UUID, UUID> lastOpponent = new HashMap<>();
     private final Set<UUID> combatLogDeaths = new HashSet<>();
+    private final Map<UUID, Long> spawnCooldowns = new HashMap<>();
 
     private File homesFile;
     private FileConfiguration homesConfig;
@@ -58,6 +62,7 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
     private final String UNKNOWN_COMMAND_MESSAGE = "§bDD SMP §8» §cDieser Befehl existiert nicht!";
 
     private final long TPA_COOLDOWN_MILLIS = 15000;
+    private final long SPAWN_COOLDOWN_MILLIS = 15000;
     private final int TELEPORT_COUNTDOWN_SECONDS = 3;
     private final int TPA_EXPIRATION_TICKS = 20 * 60;
     private final int COMBAT_DURATION_SECONDS = 20;
@@ -180,7 +185,7 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
         if (cmd.getName().toLowerCase().equals("home") || cmd.getName().toLowerCase().equals("sethome")
                 || cmd.getName().toLowerCase().equals("delhome") || cmd.getName().toLowerCase().equals("homes")
                 || cmd.getName().toLowerCase().equals("tpa") || cmd.getName().toLowerCase().equals("tpaccept")
-                || cmd.getName().toLowerCase().equals("tpadeny")) {
+                || cmd.getName().toLowerCase().equals("tpadeny") || cmd.getName().toLowerCase().equals("spawn")) {
             if (isInCombat(p)) {
                 p.sendMessage(prefix + "§cDu kannst das nicht im Kampf tun!");
                 return true;
@@ -250,6 +255,9 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
                     p.sendMessage(prefix + "§dVerwendung: §e/tpadeny <Spieler>");
                     return true;
                 }
+            case "spawn":
+                teleportToSpawn(p);
+                return true;
             case "mute":
                 if (!p.hasPermission("ddsmp.admin")) { p.sendMessage(prefix + "§cKeine Berechtigung!"); return true; }
                 if (args.length < 2) { p.sendMessage(prefix + "§dVerwendung: §e/mute <Spieler> <Grund>"); return true; }
@@ -517,15 +525,42 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
     @EventHandler
     public void onBlockBreak(BlockBreakEvent e) {
         Player p = e.getPlayer();
-        UUID owner = getChunkOwner(e.getBlock().getChunk());
+        Block b = e.getBlock();
+        UUID owner = getChunkOwner(b.getChunk());
+
         if (owner != null && !owner.equals(p.getUniqueId()) && !claimsConfig.getStringList(owner.toString() + ".trusted").contains(p.getUniqueId().toString())) {
             e.setCancelled(true);
             return;
         }
 
-        if (p.isSneaking() && isAxe(p.getInventory().getItemInMainHand().getType()) && isLog(e.getBlock().getType())) {
+        if (b.getType() == Material.PLAYER_HEAD || b.getType() == Material.PLAYER_WALL_HEAD) {
+            if (b.getState() instanceof Skull) {
+                Skull skullState = (Skull) b.getState();
+                OfflinePlayer killedPlayer = skullState.getOwningPlayer();
+
+                if (killedPlayer != null && killedPlayer.getName() != null) {
+                    e.setCancelled(true);
+
+                    ItemStack head = new ItemStack(Material.PLAYER_HEAD);
+                    SkullMeta meta = (SkullMeta) head.getItemMeta();
+
+                    meta.setOwningPlayer(killedPlayer);
+
+                    String displayName = "§b" + killedPlayer.getName() + "'s Kopf";
+                    meta.displayName(LegacyComponentSerializer.legacyAmpersand().deserialize(displayName));
+
+                    head.setItemMeta(meta);
+
+                    b.getWorld().dropItemNaturally(b.getLocation(), head);
+                    b.setType(Material.AIR);
+                    return;
+                }
+            }
+        }
+
+        if (p.isSneaking() && isAxe(p.getInventory().getItemInMainHand().getType()) && isLog(b.getType())) {
             e.setCancelled(true);
-            chopTree(e.getBlock(), p);
+            chopTree(b, p);
         }
     }
 
@@ -818,8 +853,8 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
 
         Location loc = playerHomes.get(name.toLowerCase());
         tpaCooldowns.put(p.getUniqueId(), System.currentTimeMillis());
-        p.sendMessage(prefix + "§aDu wirst in §b3 Sekunden §azu deinem Home §b" + name + " §ateleportiert!");
-        startTeleportation(p, loc, name);
+        p.sendMessage(prefix + "§aDu wirst in §b3 Sekunden §ateleportiert!");
+        startTeleportation(p, loc, "zum Home " + name);
     }
 
     private void deleteHome(Player p, String name) {
@@ -840,6 +875,27 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
         p.sendMessage(prefix + "§aDeine Homes: §b" + String.join(", ", playerHomes.keySet()));
     }
 
+    private void teleportToSpawn(Player p) {
+        if (p.getWorld().getSpawnLocation().equals(p.getLocation().getBlock().getLocation())) {
+            p.sendMessage(prefix + "§cDu bist bereits am Spawn!");
+            return;
+        }
+
+        if (spawnCooldowns.containsKey(p.getUniqueId())) {
+            long lastUsed = spawnCooldowns.get(p.getUniqueId());
+            long remaining = SPAWN_COOLDOWN_MILLIS - (System.currentTimeMillis() - lastUsed);
+            if (remaining > 0) {
+                p.sendMessage(prefix + "§cBitte warte noch §b" + (remaining / 1000 + 1) + " Sekunden, §cbevor du dich erneut zum Spawn teleportierst.");
+                return;
+            }
+        }
+
+        Location spawnLoc = p.getWorld().getSpawnLocation();
+        spawnCooldowns.put(p.getUniqueId(), System.currentTimeMillis());
+        p.sendMessage(prefix + "§aDu wirst in §b3 Sekunden §ateleportiert!");
+        startTeleportation(p, spawnLoc, "zum Spawn");
+    }
+
     private void cleanUpTpaRequest(UUID receiverUUID) {
         tpaRequests.remove(receiverUUID);
         if (tpaExpirationTasks.containsKey(receiverUUID)) {
@@ -850,7 +906,7 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
     private void sendTpaRequest(Player sender, String targetName) {
         Player target = Bukkit.getPlayerExact(targetName);
         if (target == null || !target.isOnline()) { sender.sendMessage(prefix + "§cDieser Spieler wurde nicht gefunden!"); return; }
-        if (sender.getUniqueId().equals(target.getUniqueId())) { sender.sendMessage(prefix + "§cDu kannst keine Teleportationsanfragen an dich selbst senden!"); return; }
+        if (sender.getUniqueId().equals(target.getUniqueId())) { sender.sendMessage(prefix + "§cDu kannst keine TPA-Anfragen an dich selbst senden!"); return; }
 
         if (tpaCooldowns.containsKey(sender.getUniqueId())) {
             long lastSent = tpaCooldowns.get(sender.getUniqueId());
@@ -907,7 +963,7 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
         requester.sendMessage(prefix + "§b" + accepter.getName() + " §ahat deine TPA-Anfrage akzeptiert!");
         accepter.sendMessage(prefix + "§aDu hast die TPA-Anfrage von §b" + requester.getName() + " §aakzeptiert!");
 
-        startTeleportation(requester, accepter.getLocation(), accepter.getName());
+        startTeleportation(requester, accepter.getLocation(), "zu " + accepter.getName());
     }
 
     private void denyTpa(Player denier, String requesterName) {
@@ -929,15 +985,21 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
     }
 
     private void abortTeleportation(Player p, String reason) {
-        teleporting.remove(p.getUniqueId());
-        lastLocations.remove(p.getUniqueId());
+        if (teleporting.contains(p.getUniqueId())) {
+            teleporting.remove(p.getUniqueId());
+            lastLocations.remove(p.getUniqueId());
 
-        p.sendActionBar(Component.text("§cTeleportation abgebrochen."));
-        new BukkitRunnable() { @Override public void run() { p.sendActionBar(Component.text("")); } }.runTaskLater(this, 40L);
+            if (teleportTasks.containsKey(p.getUniqueId())) {
+                teleportTasks.remove(p.getUniqueId()).cancel();
+            }
 
-        p.playSound(p.getLocation(), Sound.ENTITY_VILLAGER_HURT, 1.0f, 1.0f);
+            p.sendActionBar(Component.text("§cTeleportation abgebrochen."));
+            new BukkitRunnable() { @Override public void run() { p.sendActionBar(Component.text("")); } }.runTaskLater(this, 40L);
 
-        p.sendMessage(prefix + "§cTeleportation abgebrochen, da du " + reason + " hast.");
+            p.playSound(p.getLocation(), Sound.ENTITY_VILLAGER_HURT, 1.0f, 1.0f);
+
+            p.sendMessage(prefix + "§cTeleportation abgebrochen, da du " + reason + " hast.");
+        }
     }
 
     private void startTeleportation(Player p, Location targetLoc, String targetName) {
@@ -949,7 +1011,7 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
         teleporting.add(p.getUniqueId());
         lastLocations.put(p.getUniqueId(), p.getLocation().getBlock().getLocation());
 
-        new BukkitRunnable() {
+        BukkitRunnable task = new BukkitRunnable() {
             int seconds = TELEPORT_COUNTDOWN_SECONDS;
             @Override
             public void run() {
@@ -957,13 +1019,20 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
                     cancel();
                     teleporting.remove(p.getUniqueId());
                     lastLocations.remove(p.getUniqueId());
+                    teleportTasks.remove(p.getUniqueId());
+                    return;
+                }
+
+                if (isInCombat(p)) {
+                    abortTeleportation(p, "in den Kampf gekommen");
+                    cancel();
                     return;
                 }
 
                 if (seconds > 0) {
                     p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_HAT, 1.0f, 1.0f);
 
-                    p.sendActionBar(Component.text("§7Teleportiere in §b" + seconds + " Sekunden"));
+                    p.sendActionBar(Component.text("§7Teleport in §b" + seconds + " Sekunden"));
                     seconds--;
                 } else {
                     p.teleport(targetLoc);
@@ -973,12 +1042,36 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
 
                     teleporting.remove(p.getUniqueId());
                     lastLocations.remove(p.getUniqueId());
+                    teleportTasks.remove(p.getUniqueId());
                     p.sendActionBar(Component.text("§aDu wurdest teleportiert!"));
                     cancel();
                 }
             }
-        }.runTaskTimer(this, 0L, 20L);
+        };
+        task.runTaskTimer(this, 0L, 20L);
+        teleportTasks.put(p.getUniqueId(), task);
     }
+
+    private void dropPlayerHead(Player killed, Player killer) {
+        ItemStack head = new ItemStack(Material.PLAYER_HEAD);
+
+        if (!(head.getItemMeta() instanceof SkullMeta)) {
+            return;
+        }
+
+        SkullMeta meta = (SkullMeta) head.getItemMeta();
+
+        meta.setOwningPlayer(killed);
+
+        String displayName = "§b" + killed.getName() + "'s Kopf";
+        meta.displayName(LegacyComponentSerializer.legacyAmpersand().deserialize(displayName));
+
+        head.setItemMeta(meta);
+
+        killed.getWorld().dropItemNaturally(killed.getLocation(), head);
+
+    }
+
 
     private void dropPlayerInventoryAndXP(Player p) {
         World world = p.getWorld();
@@ -1089,22 +1182,28 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
         Player p = e.getEntity();
         UUID pUuid = p.getUniqueId();
 
+        Player killer = p.getKiller();
+
+        if (killer != null && !killer.getUniqueId().equals(pUuid)) {
+            dropPlayerHead(p, killer);
+        }
+
         if (isInCombat(p)) {
             UUID opponentUUID = lastOpponent.get(pUuid);
-            Player killer = opponentUUID != null ? Bukkit.getPlayer(opponentUUID) : null;
+            Player combatKiller = opponentUUID != null ? Bukkit.getPlayer(opponentUUID) : null;
 
             combatEndTime.remove(pUuid);
             if (combatActionBarTasks.containsKey(pUuid)) {
                 combatActionBarTasks.remove(pUuid).cancel();
             }
 
-            if (killer != null && killer.isOnline() && isInCombat(killer)) {
+            if (combatKiller != null && combatKiller.isOnline() && isInCombat(combatKiller)) {
                 combatEndTime.remove(opponentUUID);
                 if (combatActionBarTasks.containsKey(opponentUUID)) {
                     combatActionBarTasks.remove(opponentUUID).cancel();
                 }
-                killer.sendActionBar(Component.text("§aDer Kampf mit §b" + p.getName() + " §aist beendet!"));
-                new BukkitRunnable() { @Override public void run() { killer.sendActionBar(Component.text("")); } }.runTaskLater(ddsmp.this, 40L);
+                combatKiller.sendActionBar(Component.text("§aDer Kampf mit §b" + p.getName() + " §aist beendet!"));
+                new BukkitRunnable() { @Override public void run() { combatKiller.sendActionBar(Component.text("")); } }.runTaskLater(ddsmp.this, 40L);
             }
         }
 
