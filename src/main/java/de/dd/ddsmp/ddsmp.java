@@ -559,8 +559,11 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
         }
 
         if (p.isSneaking() && isAxe(p.getInventory().getItemInMainHand().getType()) && isLog(b.getType())) {
-            e.setCancelled(true);
-            chopTree(b, p);
+            Set<Block> logBlocks = findTreeBlocks(b);
+            if (!logBlocks.isEmpty() && hasLeavesAttached(logBlocks)) {
+                e.setCancelled(true);
+                chopTree(b, p, logBlocks);
+            }
         }
     }
 
@@ -642,13 +645,7 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
         return material.toString().endsWith("_LEAVES");
     }
 
-    private void chopTree(Block startBlock, Player p) {
-        Set<Block> logBlocks = findTreeBlocks(startBlock);
-        if (logBlocks.isEmpty()) {
-            startBlock.breakNaturally(p.getInventory().getItemInMainHand());
-            return;
-        }
-
+    private void chopTree(Block startBlock, Player p, Set<Block> logBlocks) {
         Set<Block> leafBlocks = new HashSet<>();
         for (Block log : logBlocks) {
             for (int x = -2; x <= 2; x++) {
@@ -742,6 +739,22 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
             }
         }
         return logBlocks;
+    }
+
+    private boolean hasLeavesAttached(Set<Block> logBlocks) {
+        for (Block log : logBlocks) {
+            for (int x = -1; x <= 1; x++) {
+                for (int y = -1; y <= 1; y++) {
+                    for (int z = -1; z <= 1; z++) {
+                        Block neighbor = log.getRelative(x, y, z);
+                        if (isLeaves(neighbor.getType())) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        return false;
     }
 
 
@@ -1008,6 +1021,11 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
             return;
         }
 
+        if (isInCombat(p)) {
+            p.sendMessage(prefix + "§cDu kannst das nicht im Kampf tun!");
+            return;
+        }
+
         teleporting.add(p.getUniqueId());
         lastLocations.put(p.getUniqueId(), p.getLocation().getBlock().getLocation());
 
@@ -1144,12 +1162,14 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
         if (isInCombat(p)) {
             dropPlayerInventoryAndXP(p);
 
+            UUID opponentUUID = lastOpponent.get(p.getUniqueId());
+            Player opponent = opponentUUID != null ? Bukkit.getPlayer(opponentUUID) : null;
+
+            dropPlayerHead(p, opponent);
+
             p.sendMessage("§cDu hast den Server während dem Kampf verlassen! Deine Gegenstände und XP wurden fallengelassen.");
 
             combatLogDeaths.add(p.getUniqueId());
-
-            UUID opponentUUID = lastOpponent.get(p.getUniqueId());
-            Player opponent = opponentUUID != null ? Bukkit.getPlayer(opponentUUID) : null;
 
             combatEndTime.remove(p.getUniqueId());
             if (combatActionBarTasks.containsKey(p.getUniqueId())) {
