@@ -1,5 +1,5 @@
 name: DDSMP
-version: '1.2'
+version: '1.3-SNAPSHOT'
 main: de.dd.ddsmp.ddsmp
 api-version: '1.21'
 load: STARTUP
@@ -59,4 +59,19 @@ commands:
         description: Zeigt die Chat-Sperre des ausgewählten Spielers und den Grund an
         usage: /checkmute <player>
         permission: ddsmp.admin
+        permission-message: §bDD SMP §8» §cDazu hast du keine Rechte!
+
+    spawn:
+        description: Teleportiert dich zum Spawn
+        usage: /spawn
+        permission-message: §bDD SMP §8» §cDazu hast du keine Rechte!
+
+    ec:
+        description: Öffnet deine Enderchest
+        usage: /ec
+        permission-message: §bDD SMP §8» §cDazu hast du keine Rechte!
+
+    enderchest:
+        description: Öffnet deine Enderchest
+        usage: /enderchest
         permission-message: §bDD SMP §8» §cDazu hast du keine Rechte!
