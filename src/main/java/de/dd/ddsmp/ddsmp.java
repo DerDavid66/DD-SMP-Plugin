@@ -192,6 +192,11 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
             }
         }
 
+        if (cmd.getName().equalsIgnoreCase("ec") || cmd.getName().equalsIgnoreCase("enderchest")) {
+            p.openInventory(p.getEnderChest());
+            return true;
+        }
+
         if (cmd.getName().equalsIgnoreCase("chunk")) {
             if (args.length == 0) { p.sendMessage(prefix + "§dVerwendung: §e/chunk <claim | unclaim | trust | untrust | info | list>"); return true; }
             switch (args[0].toLowerCase()) {
@@ -469,6 +474,7 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
         String reason = String.join(" ", Arrays.copyOfRange(args, 1, args.length));
         muteConfig.set(target.getUniqueId().toString() + ".muted", true);
         muteConfig.set(target.getUniqueId().toString() + ".reason", reason);
+        muteConfig.set(target.getUniqueId().toString() + ".admin", admin.getName());
         saveMuteFile();
 
         admin.sendMessage(prefix + "§aDu hast §b" + target.getName() + " §agemutet. Grund: §b" + reason);
@@ -505,9 +511,11 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
         UUID targetUUID = target.getUniqueId();
         if (muteConfig.getBoolean(targetUUID.toString() + ".muted")) {
             String reason = muteConfig.getString(targetUUID.toString() + ".reason", "Kein Grund angegeben");
+            String mutedBy = muteConfig.getString(targetUUID.toString() + ".admin", "Unbekannt");
             admin.sendMessage(prefix + "§dMute Info:");
             admin.sendMessage("§aSpieler: §b" + target.getName());
             admin.sendMessage("§aStatus: §cGemutet §7- §aGrund: §b" + reason);
+            admin.sendMessage("§aVergeben von: §b" + mutedBy);
         } else {
             admin.sendMessage(prefix + "§cDieser Spieler ist nicht gemutet!");
         }
@@ -833,6 +841,11 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
         if (muteConfig.getBoolean(uuid.toString() + ".muted")) {
             e.setCancelled(true);
             String reason = muteConfig.getString(uuid.toString() + ".reason", "Kein Grund angegeben");
+            String mutedBy = muteConfig.getString(uuid.toString() + ".admin", "Unbekannt");
+
+            p.sendMessage(prefix + "§cDu bist im Chat gemutet!");
+            p.sendMessage("§aGrund: §b" + reason);
+            p.sendMessage("§aVergeben von: §b" + mutedBy);
         }
     }
 
