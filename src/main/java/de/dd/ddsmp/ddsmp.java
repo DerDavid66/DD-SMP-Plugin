@@ -206,7 +206,7 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
                 case "untrust": if (args.length != 2) { p.sendMessage(prefix + "§dVerwendung: §e/chunk untrust <Spieler>"); return true; } untrustChunk(p, args[1]); return true;
                 case "info": chunkInfo(p); return true;
                 case "list": listChunks(p); return true;
-                default: return false;
+                default: p.sendMessage(prefix + "§dVerwendung: §e/chunk <claim | unclaim | trust | untrust | info | list>"); return true;
             }
         }
 
