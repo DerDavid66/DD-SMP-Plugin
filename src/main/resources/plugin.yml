@@ -1,11 +1,11 @@
 name: DDSMP
-version: '1.3-SNAPSHOT'
+version: '1.3'
 main: de.dd.ddsmp.ddsmp
 api-version: '1.21'
 load: STARTUP
 authors: [ DerDavid66 ]
 description: Alle Systeme für den DD SMP!
-website: https://ddsmp.netlify.app
+website: https://modrinth.com/plugin/dd-smp
 
 commands:
     home:
