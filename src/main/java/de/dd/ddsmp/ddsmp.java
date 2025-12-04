@@ -185,7 +185,8 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
         if (cmd.getName().toLowerCase().equals("home") || cmd.getName().toLowerCase().equals("sethome")
                 || cmd.getName().toLowerCase().equals("delhome") || cmd.getName().toLowerCase().equals("homes")
                 || cmd.getName().toLowerCase().equals("tpa") || cmd.getName().toLowerCase().equals("tpaccept")
-                || cmd.getName().toLowerCase().equals("tpadeny") || cmd.getName().toLowerCase().equals("spawn")) {
+                || cmd.getName().toLowerCase().equals("tpadeny") || cmd.getName().toLowerCase().equals("spawn")
+                || cmd.getName().equalsIgnoreCase("ec") || cmd.getName().equalsIgnoreCase("enderchest")) {
             if (isInCombat(p)) {
                 p.sendMessage(prefix + "§cDu kannst das nicht im Kampf tun!");
                 return true;
