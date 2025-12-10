@@ -176,6 +176,11 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
 
     @Override
     public boolean onCommand(CommandSender sender, Command cmd, String label, String[] args) {
+        if (cmd.getName().equalsIgnoreCase("ddsmp")) {
+            sendCredits(sender);
+            return true;
+        }
+
         if (!(sender instanceof Player)) {
             sender.sendMessage(prefix + "§cNur Spieler können diesen Befehl verwenden!");
             return true;
@@ -1259,5 +1264,16 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
             }
             if (closestHome != null) p.sendMessage(prefix + "§aNächstes Home: §b" + closestHome + " §7- §aEntfernung: §e" + (int) closestDist + " Blöcke");
         }
+    }
+
+    private void sendCredits(CommandSender sender) {
+        sender.sendMessage(prefix + "§2Plugin Credits");
+        sender.sendMessage(prefix + "§7------------------");
+        sender.sendMessage(prefix + "§eLizenzinformation (MIT License)§7:");
+        sender.sendMessage(prefix + "§7- §6Du darfst das Plugin verwenden und abändern.");
+        sender.sendMessage(prefix + "§7- §6Die abgeänderte Version darf nicht als dein komplettes eigenes Werk ausgegeben werden.");
+        sender.sendMessage(prefix + "§7------------------");
+        sender.sendMessage(prefix + "§aMade with §c❤ §aby §bDerDavid66");
+        sender.sendMessage(prefix + "§7Nutze §e/ver ddsmp §7für den §dDownload-Link");
     }
 }
