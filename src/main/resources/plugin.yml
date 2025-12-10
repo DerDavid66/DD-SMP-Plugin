@@ -1,5 +1,5 @@
 name: DDSMP
-version: '1.4-SNAPSHOT'
+version: '1.4'
 main: de.dd.ddsmp.ddsmp
 api-version: '1.21'
 load: STARTUP
@@ -74,4 +74,9 @@ commands:
     enderchest:
         description: Öffnet deine Enderchest
         usage: /enderchest
+        permission-message: §bDD SMP §8» §cDazu hast du keine Rechte!
+
+    ddsmp:
+        description: Zeigt die Plugin-Credits an
+        usage: /ddsmp
         permission-message: §bDD SMP §8» §cDazu hast du keine Rechte!
