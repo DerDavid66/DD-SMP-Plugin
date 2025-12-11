@@ -8,11 +8,11 @@ import org.bukkit.block.Skull;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
+import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.event.*;
-import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
@@ -33,11 +33,31 @@ import org.bukkit.scheduler.BukkitRunnable;
 import java.io.File;
 import java.io.IOException;
 import java.util.*;
-import java.util.stream.Collectors;
 
 public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
 
-    private final Map<UUID, Map<String, Location>> homes = new HashMap<>();
+    private static class HomeLocation {
+        String worldName;
+        double x, y, z;
+        float yaw, pitch;
+
+        HomeLocation(String worldName, double x, double y, double z, float yaw, float pitch) {
+            this.worldName = worldName;
+            this.x = x;
+            this.y = y;
+            this.z = z;
+            this.yaw = yaw;
+            this.pitch = pitch;
+        }
+
+        Location getLocation() {
+            World w = Bukkit.getWorld(worldName);
+            if (w == null) return null;
+            return new Location(w, x, y, z, yaw, pitch);
+        }
+    }
+
+    private final Map<UUID, Map<String, HomeLocation>> homes = new HashMap<>();
     private final Map<UUID, TpaRequest> tpaRequests = new HashMap<>();
     private final Set<UUID> teleporting = new HashSet<>();
     private final Map<UUID, BukkitRunnable> teleportTasks = new HashMap<>();
@@ -94,7 +114,7 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
         homesFile = new File(getDataFolder(), "homes.yml");
         if (!homesFile.exists()) {
             homesFile.getParentFile().mkdirs();
-            saveResource("homes.yml", false);
+            try { homesFile.createNewFile(); } catch (IOException ignored) {}
         }
         homesConfig = YamlConfiguration.loadConfiguration(homesFile);
     }
@@ -126,35 +146,75 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
     }
 
     private void loadHomes() {
-        if (homesConfig.getConfigurationSection("homes") == null) return;
-        for (String uuidStr : homesConfig.getConfigurationSection("homes").getKeys(false)) {
-            UUID uuid = UUID.fromString(uuidStr);
-            Map<String, Location> playerHomes = new HashMap<>();
-            for (String homeName : homesConfig.getConfigurationSection("homes." + uuidStr).getKeys(false)) {
-                String path = "homes." + uuidStr + "." + homeName;
-                World world = Bukkit.getWorld(homesConfig.getString(path + ".world"));
-                double x = homesConfig.getDouble(path + ".x");
-                double y = homesConfig.getDouble(path + ".y");
-                double z = homesConfig.getDouble(path + ".z");
-                float yaw = (float) homesConfig.getDouble(path + ".yaw");
-                float pitch = (float) homesConfig.getDouble(path + ".pitch");
-                if (world != null) playerHomes.put(homeName, new Location(world, x, y, z, yaw, pitch));
+        homes.clear();
+
+        if (homesFile == null || !homesFile.exists()) {
+            createHomesFile();
+        }
+
+        homesConfig = YamlConfiguration.loadConfiguration(homesFile);
+        ConfigurationSection homesSection = homesConfig.getConfigurationSection("homes");
+        if (homesSection == null) return;
+
+        for (String uuidStr : homesSection.getKeys(false)) {
+            UUID uuid;
+            try {
+                uuid = UUID.fromString(uuidStr);
+            } catch (IllegalArgumentException e) {
+                continue;
             }
-            homes.put(uuid, playerHomes);
+
+            Map<String, HomeLocation> playerHomes = new HashMap<>();
+            ConfigurationSection playerHomesSection = homesSection.getConfigurationSection(uuidStr);
+            if (playerHomesSection == null) continue;
+
+            for (String homeName : playerHomesSection.getKeys(false)) {
+                String locString = playerHomesSection.getString(homeName);
+                if (locString == null) continue;
+
+                try {
+                    String[] parts = locString.split(";");
+                    if (parts.length != 6) {
+                        continue;
+                    }
+
+                    String worldName = parts[0];
+                    double x = Double.parseDouble(parts[1]);
+                    double y = Double.parseDouble(parts[2]);
+                    double z = Double.parseDouble(parts[3]);
+                    float yaw = Float.parseFloat(parts[4]);
+                    float pitch = Float.parseFloat(parts[5]);
+
+                    HomeLocation loc = new HomeLocation(worldName, x, y, z, yaw, pitch);
+                    playerHomes.put(homeName, loc);
+                } catch (Exception ignored) {
+                }
+            }
+
+            if (!playerHomes.isEmpty()) {
+                homes.put(uuid, playerHomes);
+            }
         }
     }
 
     private void saveHomes() {
+        homesConfig.set("homes", null);
+        ConfigurationSection rootSection = homesConfig.createSection("homes");
+
         for (UUID uuid : homes.keySet()) {
-            for (String name : homes.get(uuid).keySet()) {
-                Location loc = homes.get(uuid).get(name);
-                String path = "homes." + uuid + "." + name;
-                homesConfig.set(path + ".world", loc.getWorld().getName());
-                homesConfig.set(path + ".x", loc.getX());
-                homesConfig.set(path + ".y", loc.getY());
-                homesConfig.set(path + ".z", loc.getZ());
-                homesConfig.set(path + ".yaw", loc.getYaw());
-                homesConfig.set(path + ".pitch", loc.getPitch());
+            ConfigurationSection playerSection = rootSection.createSection(uuid.toString());
+            Map<String, HomeLocation> playerHomes = homes.get(uuid);
+
+            for (Map.Entry<String, HomeLocation> entry : playerHomes.entrySet()) {
+                HomeLocation loc = entry.getValue();
+                String locString = String.format(Locale.US, "%s;%.2f;%.2f;%.2f;%.2f;%.2f",
+                        loc.worldName,
+                        loc.x,
+                        loc.y,
+                        loc.z,
+                        loc.yaw,
+                        loc.pitch);
+                playerSection.set(entry.getKey(), locString);
             }
         }
         try { homesConfig.save(homesFile); } catch (IOException e) { e.printStackTrace(); }
@@ -366,7 +426,7 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
     }
 
     private List<String> getPlayerHomeNames(Player p) {
-        Map<String, Location> playerHomes = homes.get(p.getUniqueId());
+        Map<String, HomeLocation> playerHomes = homes.get(p.getUniqueId());
         if (playerHomes == null) return Collections.emptyList();
         return new ArrayList<>(playerHomes.keySet());
     }
@@ -857,18 +917,19 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
 
     private void setHome(Player p, String name) {
         homes.putIfAbsent(p.getUniqueId(), new HashMap<>());
-        Map<String, Location> playerHomes = homes.get(p.getUniqueId());
+        Map<String, HomeLocation> playerHomes = homes.get(p.getUniqueId());
         if (playerHomes.size() >= 2 && !playerHomes.containsKey(name.toLowerCase())) {
             p.sendMessage(prefix + "§cDu kannst nur maximal §b2 Homes §csetzen!");
             return;
         }
-        playerHomes.put(name.toLowerCase(), p.getLocation());
+        Location l = p.getLocation();
+        playerHomes.put(name.toLowerCase(), new HomeLocation(l.getWorld().getName(), l.getX(), l.getY(), l.getZ(), l.getYaw(), l.getPitch()));
         saveHomes();
         p.sendMessage(prefix + "§aHome §b" + name + " §awurde erfolgreich gesetzt!");
     }
 
     private void teleportHome(Player p, String name) {
-        Map<String, Location> playerHomes = homes.get(p.getUniqueId());
+        Map<String, HomeLocation> playerHomes = homes.get(p.getUniqueId());
         if (playerHomes == null || !playerHomes.containsKey(name.toLowerCase())) {
             p.sendMessage(prefix + "§cEs wurde kein §bHome §cmit diesem Namen gefunden!");
             return;
@@ -883,32 +944,50 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
             }
         }
 
-        Location loc = playerHomes.get(name.toLowerCase());
+        HomeLocation hLoc = playerHomes.get(name.toLowerCase());
+        Location loc = hLoc.getLocation();
+
+        if (loc == null) {
+            p.sendMessage(prefix + "§cDie Welt für dieses Home ist nicht geladen!");
+            return;
+        }
+
         tpaCooldowns.put(p.getUniqueId(), System.currentTimeMillis());
         p.sendMessage(prefix + "§aDu wirst in §b3 Sekunden §ateleportiert!");
         startTeleportation(p, loc, "zum Home " + name);
     }
 
     private void deleteHome(Player p, String name) {
-        Map<String, Location> playerHomes = homes.get(p.getUniqueId());
+        Map<String, HomeLocation> playerHomes = homes.get(p.getUniqueId());
         if (playerHomes == null || !playerHomes.containsKey(name.toLowerCase())) {
             p.sendMessage(prefix + "§cEs wurde kein §bHome §cmit diesem Namen gefunden!");
             return;
         }
         playerHomes.remove(name.toLowerCase());
-        homesConfig.set("homes." + p.getUniqueId() + "." + name.toLowerCase(), null);
         saveHomes();
         p.sendMessage(prefix + "§aHome §b" + name + " §awurde gelöscht!");
     }
 
     private void listHomes(Player p) {
-        Map<String, Location> playerHomes = homes.get(p.getUniqueId());
+        Map<String, HomeLocation> playerHomes = homes.get(p.getUniqueId());
         if (playerHomes == null || playerHomes.isEmpty()) { p.sendMessage(prefix + "§cDu hast kein §bHome §cgesetzt."); return; }
         p.sendMessage(prefix + "§aDeine Homes: §b" + String.join(", ", playerHomes.keySet()));
     }
 
     private void teleportToSpawn(Player p) {
-        if (p.getWorld().getSpawnLocation().equals(p.getLocation().getBlock().getLocation())) {
+        World overworld = Bukkit.getWorld("world");
+        if (overworld == null && !Bukkit.getWorlds().isEmpty()) {
+            overworld = Bukkit.getWorlds().get(0);
+        }
+
+        if (overworld == null) {
+            p.sendMessage(prefix + "§cDie Overworld konnte nicht gefunden werden!");
+            return;
+        }
+
+        Location spawnLoc = overworld.getSpawnLocation();
+
+        if (spawnLoc.equals(p.getLocation().getBlock().getLocation())) {
             p.sendMessage(prefix + "§cDu bist bereits am Spawn!");
             return;
         }
@@ -922,7 +1001,6 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
             }
         }
 
-        Location spawnLoc = p.getWorld().getSpawnLocation();
         spawnCooldowns.put(p.getUniqueId(), System.currentTimeMillis());
         p.sendMessage(prefix + "§aDu wirst in §b3 Sekunden §ateleportiert!");
         startTeleportation(p, spawnLoc, "zum Spawn");
@@ -1152,7 +1230,15 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
             p.setLevel(0);
             p.setExp(0);
 
-            p.teleport(p.getWorld().getSpawnLocation());
+            World overworld = Bukkit.getWorld("world");
+            if (overworld == null && !Bukkit.getWorlds().isEmpty()) {
+                overworld = Bukkit.getWorlds().get(0);
+            }
+            if (overworld != null) {
+                p.teleport(overworld.getSpawnLocation());
+            } else {
+                p.teleport(p.getWorld().getSpawnLocation());
+            }
 
             p.playSound(p.getLocation(), Sound.BLOCK_BEACON_DEACTIVATE, 1.0f, 1.0f);
 
@@ -1251,15 +1337,18 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
         Location deathLoc = p.getLocation();
         deathPoints.put(pUuid, deathLoc);
         p.sendMessage(prefix + "§cDu bist gestorben bei §eX: " + deathLoc.getBlockX() + " Y: " + deathLoc.getBlockY() + " Z: " + deathLoc.getBlockZ());
-        Map<String, Location> playerHomes = homes.get(pUuid);
+        Map<String, HomeLocation> playerHomes = homes.get(pUuid);
         if (playerHomes != null && !playerHomes.isEmpty()) {
             String closestHome = null;
             double closestDist = Double.MAX_VALUE;
-            for (Map.Entry<String, Location> entry : playerHomes.entrySet()) {
-                double dist = entry.getValue().distance(deathLoc);
-                if (dist < closestDist) {
-                    closestDist = dist;
-                    closestHome = entry.getKey();
+            for (Map.Entry<String, HomeLocation> entry : playerHomes.entrySet()) {
+                Location homeLoc = entry.getValue().getLocation();
+                if (homeLoc != null && homeLoc.getWorld().equals(deathLoc.getWorld())) {
+                    double dist = homeLoc.distance(deathLoc);
+                    if (dist < closestDist) {
+                        closestDist = dist;
+                        closestHome = entry.getKey();
+                    }
                 }
             }
             if (closestHome != null) p.sendMessage(prefix + "§aNächstes Home: §b" + closestHome + " §7- §aEntfernung: §e" + (int) closestDist + " Blöcke");
