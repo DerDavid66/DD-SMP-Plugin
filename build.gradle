@@ -4,7 +4,7 @@ plugins {
 }
 
 group = 'de.dd.ddsmp.ddsmp'
-version = '1.5-SNAPSHOT'
+version = '1.5'
 
 repositories {
     mavenCentral()
