@@ -1336,22 +1336,46 @@ public final class ddsmp extends JavaPlugin implements Listener, TabCompleter {
 
         Location deathLoc = p.getLocation();
         deathPoints.put(pUuid, deathLoc);
-        p.sendMessage(prefix + "§cDu bist gestorben bei §eX: " + deathLoc.getBlockX() + " Y: " + deathLoc.getBlockY() + " Z: " + deathLoc.getBlockZ());
-        Map<String, HomeLocation> playerHomes = homes.get(pUuid);
-        if (playerHomes != null && !playerHomes.isEmpty()) {
-            String closestHome = null;
-            double closestDist = Double.MAX_VALUE;
-            for (Map.Entry<String, HomeLocation> entry : playerHomes.entrySet()) {
-                Location homeLoc = entry.getValue().getLocation();
-                if (homeLoc != null && homeLoc.getWorld().equals(deathLoc.getWorld())) {
-                    double dist = homeLoc.distance(deathLoc);
-                    if (dist < closestDist) {
-                        closestDist = dist;
-                        closestHome = entry.getKey();
+    }
+
+    @EventHandler
+    public void onPlayerRespawn(PlayerRespawnEvent e) {
+        Player p = e.getPlayer();
+        UUID pUuid = p.getUniqueId();
+
+        if (deathPoints.containsKey(pUuid)) {
+            Location deathLoc = deathPoints.remove(pUuid);
+            String worldName = deathLoc.getWorld().getName();
+            String displayWorldName = "";
+
+            if (worldName.equalsIgnoreCase("world")) {
+                displayWorldName = "Overworld";
+            } else if (worldName.equalsIgnoreCase("world_nether")) {
+                displayWorldName = "Nether";
+            } else if (worldName.equalsIgnoreCase("world_the_end")) {
+                displayWorldName = "End";
+            } else {
+                displayWorldName = worldName;
+            }
+
+            p.sendMessage(prefix + "§cDu bist gestorben in §b" + displayWorldName + " §cbei §eX: " + deathLoc.getBlockX() + " Y: " + deathLoc.getBlockY() + " Z: " + deathLoc.getBlockZ());
+
+            Map<String, HomeLocation> playerHomes = homes.get(pUuid);
+            if (playerHomes != null && !playerHomes.isEmpty()) {
+                String closestHome = null;
+                double closestDist = Double.MAX_VALUE;
+                for (Map.Entry<String, HomeLocation> entry : playerHomes.entrySet()) {
+                    Location homeLoc = entry.getValue().getLocation();
+                    if (homeLoc != null && homeLoc.getWorld().equals(deathLoc.getWorld())) {
+                        double dist = homeLoc.distance(deathLoc);
+                        if (dist < closestDist) {
+                            closestDist = dist;
+                            closestHome = entry.getKey();
+                        }
                     }
                 }
+                if (closestHome != null) p.sendMessage(prefix + "§aNächstes Home: §b" + closestHome + " §7- §aEntfernung: §e" + (int) closestDist + " Blöcke");
             }
-            if (closestHome != null) p.sendMessage(prefix + "§aNächstes Home: §b" + closestHome + " §7- §aEntfernung: §e" + (int) closestDist + " Blöcke");
         }
     }
 
